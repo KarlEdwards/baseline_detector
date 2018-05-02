@@ -5,10 +5,10 @@
 #  FEATURES   extract features
 #  CLASSIFY   classify images and evaluate the classifier performance
 
-# --- For configuration file ---
-CFGFILE=detector.cfg; echo; echo "CONFIG FILE : $CFGFILE"
+# --- Hard Configuration
+CFGFILE=baseline_detector.cfg; echo; echo "CONFIG FILE : $CFGFILE"
 
-# Utility functions for handling configuration file
+# --- Utility functions for handling configuration file
 function sed_escape() {
   sed -e 's/[]\/$*.^[]/\\&/g'
 }
@@ -18,6 +18,7 @@ function cfg_read() { # key -> value
   test -f "$CFGFILE" && grep "^$(echo "$KEY" | sed_escape)=" "$CFGFILE" | sed "s/^$(echo "$KEY" | sed_escape)=//" | tail -1
 }
 
+# --- Read default configuration
 function read_configuration(){
 
   PROJECTPATH=$(  cfg_read PROJECTPATH  )
@@ -33,6 +34,7 @@ function read_configuration(){
 
 }
 
+# --- Show configuration
 function show_configuration(){
   echo "-------------"
   echo "PROJECTPATH : $PROJECTPATH"
@@ -57,8 +59,9 @@ function show_configuration(){
 
 }
 
+# --- Round a number, N, to D digits
 function round() 
-{ # Round number N to D digits
+{
   number=$1; digits=$2
   echo $(printf %.$2f $(echo "scale="$digits";(((10^"$digits")*"$number")+0.5)/(10^"$digits")" | bc))
 }
@@ -74,8 +77,8 @@ function initialize(){
   HELP=false
   CELLS=8
   BINS=8
-  KEYWORD=disc
-  FRACTION=0.80
+  KEYWORD=none
+  FRACTION=0.00
   
   LABEL_FILE="" 
   
@@ -132,28 +135,69 @@ function usage()
 	   ./$PROGRAM_NAME -c
 	  	  
 	  Any number of cells; specific number of bins
-	   ./detector.sh -c --cells "*" --bins 8 -f .8
+	   ./$PROGRAM_NAME -c --cells "*" --bins 8 -f .8
 	EOF
 }
 
+# --- Create a subdirectory if it does not already exist
 function make_directory_if_not_existing()
-{ # Create a subdirectory if it does not already exist
+{
   [ -d $1 ] && echo "Using existing subdirectory" $1 || (echo "Creating subdirectory " $1; mkdir $1)
   echo 
 }
 
-function histograms_of_oriented_gradients()
-{
-  which_class=$1
-  echo Producing Histograms of Oriented Gradients for $which_class
-  echo "image_path : $image_path"
-  $hogexec -d $image_path --cells=$CELLS --bins=$BINS -o $subgroup/"$which_class".csv ../"$which_class".txt
+function new_dataset(){
+  echo "LABEL_FILE: $LABEL_FILE"
+  if [ "$LABEL_FILE" == "" ]; then echo "--label_file FILE_NAME is required."; exit; fi
+  if [ ! -e "$LABEL_FILE" ]; then echo "$LABEL_FILE not found."; exit; fi
+  cmd="$partitionexec $DATASET$KEYWORD $LABEL_FILE $FRACTION"
+  if [ "$DRY_RUN" == "true" ]; then
+    echo "DRY RUN: $to_do"
+    echo $cmd
+    exit
+  else
+    echo "Call partition..."
+    $cmd
+  fi
+}
+
+# --- Make histograms of oriented gradients ( HoGs )
+function extract_features(){
+  if [ "$DRY_RUN" == "true" ]; then
+    echo "DRY RUN: $to_do"
+    exit
+  else
+    group="$PROJECTPATH"$dataset$destination
+    subgroup=$group/cells"$CELLS"_bins"$BINS"
+
+    echo "   group: $group"
+    echo "subgroup: $subgroup"
+
+    make_directory_if_not_existing $subgroup
+    for file in training_pos training_neg testing_pos testing_neg; do
+
+      $hogexec \
+        --data_path=$image_path --cells=$CELLS --bins=$BINS \
+        --output=$subgroup/"$file".csv --input=$group/"$file".txt  
+  
+    done 
+  fi
+}
+
+function classify_images(){
+  if [ "$DRY_RUN" == "true" ]; then
+    echo "DRY RUN: $to_do"
+    exit
+  else
+    pattern="$DATASET""$destination"/"cells""$CELLS""_bins""$BINS"
+    score_parameters="ls -d $pattern*"
+    $score_parameters | xargs -n 1 $svmexec --lib_path=$LIBPATH --summary_file=summary.csv
+  fi
 }
 
 # -----------------------------------------------
 #           M A I N   F U N C T I O N
 # -----------------------------------------------
-
 
 # --- Initialize
 DRY_RUN=false;
@@ -162,74 +206,36 @@ HELP=false;
 
 # --- Get command-line
   initialize
+
   while true; do
     case "$1" in
-    
       -cfg | --config_file ) CFGFILE="$2"; shift 2 ;;
-
-      -l | --label_file )   LABEL_FILE="$2"; shift 2 ;;
-
-      -p | --partition )    PARTITION=true;  shift   ;;
+      -l | --label_file )   LABEL_FILE="$2"; shift 2 ; echo 'Label file input !' ;;
+      -p | --partition )    PARTITION=true;  shift  ; echo 'Partition input !'  ;;
       -x | --hogs      )     FEATURES=true;  shift   ;;
       -c | --classify  )     CLASSIFY=true;  shift   ;;
-
-      -d | --dataset   )      DATASET=$2;    shift 2 ;;
-      -k | --keyword   )      KEYWORD=$2;    shift 2 ;;
-      -f | --fraction  )     FRACTION=$2;    shift 2 ;;
-      -w | --cells     )        CELLS=$2;    shift 2 ;;
-      -b | --bins      )         BINS=$2;    shift 2 ;;
- 
+      -d | --dataset   )      DATASET="$2/";   shift 2 ;;
+      -k | --keyword   )      KEYWORD="$2";    shift 2 ;;
+      -f | --fraction  )     FRACTION="$2";    shift 2 ;;
+      -w | --cells     )        CELLS="$2";    shift 2 ;;
+      -b | --bins      )         BINS="$2";    shift 2 ;;
       -h | --help      )         HELP=true;  shift; usage; exit ;;
       -n | --dry_run   )      DRY_RUN=true;  shift; ;;
-
-      # End of keyword parameters
       --               )                     shift; break ;;
       *                ) break ;;
-
     esac
   done
+
   image_path="$PROJECTPATH""$DATAPATH"
   partitionexec="$PROJECTPATH""$LIBPATH""partition_data_two_class.sh"
-  hogexec="$PROJECTPATH""$LIBPATH"/"HoG.R"
+  hogexec="$PROJECTPATH""$LIBPATH""HoG.R"
   svmexec="$PROJECTPATH""$LIBPATH"/"score.R"
-  destination=$(printf $KEYWORD%s $(echo "$(round 100*$FRACTION 0)" | bc))
-
-# --- Select function for Rscript
-[ "$PUBLISH" == "true" ] && fun=publish || fun=preview
+  destination="$DATASET"$(printf $KEYWORD%s $(echo "$(round 100*$FRACTION 0)" | bc))
 
 show_configuration
 
 echo "destination: $destination"
-echo "--- Call an RScript or another bash script here ..."
-
-function new_dataset(){
-  if [ "$LABEL_FILE" == "" ]; then echo "--label_file FILE_NAME is required."; exit; fi
-  if [ ! -e "$LABEL_FILE" ]; then echo "$LABEL_FILE not found."; exit; fi
-  cmd="$partitionexec $KEYWORD $LABEL_FILE $FRACTION"
-  if [ "$DRY_RUN" == "true" ]; then echo "DRY RUN: $to_do"; echo $cmd; exit; fi
-  echo "Call partition..."
-  $cmd
-
-}
-
-function extract_features(){
-  if [ "$DRY_RUN" == "true" ]; then echo "DRY RUN: $to_do"; exit; fi
-  echo "Call HoGs..."
-  #   group="$PROJECTPATH"$dataset/$destination
-  #   subgroup=$group/cells"$cells"_bins"$bins"
-
-}
-
-function classify_images(){
-  if [ "$DRY_RUN" == "true" ]; then echo "DRY RUN: $to_do"; exit; fi
-  pattern="$DATASET"/"$destination"/"cells""$CELLS""_bins""$BINS"
-  score_parameters="ls -d $pattern*"
-  $score_parameters | xargs -n 1 $svmexec --lib_path=$LIBPATH --summary_file=summary.csv
-}
 
 [ $PARTITION == true ] && new_dataset
 [ $FEATURES  == true ] && extract_features
 [ $CLASSIFY  == true ] && classify_images
-
-# --- Call the Rscript
-### Rscript -e 'args <- commandArgs( TRUE ); f = args[ 1 ]; if( f == "publish" ) blogdown::build_site() else blogdown::serve_site();' $fun
